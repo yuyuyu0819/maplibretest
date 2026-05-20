@@ -11,12 +11,29 @@
         <option value="polygon">ポリゴン（Polygon）</option>
         <option value="rectangle">矩形（Rectangle）</option>
         <option value="angled-rectangle">傾き矩形</option>
-        <option value="circle">円（Circle）</option>
+        <option value="circle">円 / 回転楕円</option>
+        <option value="arc-rectangle">円弧矩形</option>
         <option value="freehand">フリーハンド（面）</option>
         <option value="freehand-linestring">フリーハンド（線）</option>
         <option value="select">選択・編集</option>
       </select>
       <div class="current-mode">現在: <span>{{ currentModeLabel }}</span></div>
+      <div v-if="selectedMode === 'arc-rectangle'" class="mode-hint">
+        辺をクリック: 選択（中点マーカー）<br>
+        ドラッグ: 円弧の深さ調整<br>
+        Enter: 確定 / Esc: キャンセル
+      </div>
+      <div v-if="selectedMode === 'select'" class="mode-hint">
+        クリック: 図形を選択<br>
+        ドラッグ: 移動<br>
+        Ctrl+R+ドラッグ: 回転<br>
+        スケールハンドル: 拡縮
+      </div>
+      <div v-if="selectedMode === 'circle'" class="mode-hint">
+        ①中心クリック<br>
+        ②長軸クリック<br>
+        ③短軸クリックで確定
+      </div>
     </div>
   </div>
 </template>
@@ -26,8 +43,12 @@ import { ref, onMounted, onUnmounted } from 'vue'
 import maplibregl from 'maplibre-gl'
 import 'maplibre-gl/dist/maplibre-gl.css'
 import { MaplibreTerradrawControl } from '@watergis/maplibre-gl-terradraw'
+import type { TerradrawMode, TerradrawModeClass } from '@watergis/maplibre-gl-terradraw'
 import '@watergis/maplibre-gl-terradraw/dist/maplibre-gl-terradraw.css'
+import { TerraDrawSelectMode } from 'terra-draw'
 import { ScreenAlignedRectangleMode } from '../modes/ScreenAlignedRectangleMode'
+import { RotatableCircleMode } from '../modes/RotatableCircleMode'
+import { ArcRectangleMode } from '../modes/ArcRectangleMode'
 
 const mapContainer = ref<HTMLDivElement | null>(null)
 const selectedMode = ref<string>('render')
@@ -36,6 +57,7 @@ const currentModeLabel = ref<string>('なし')
 let map: maplibregl.Map | null = null
 let drawControl: MaplibreTerradrawControl | null = null
 
+// 'arc-rectangle' は AvailableModes に含まれないため as unknown as TerradrawMode[] でキャスト
 const MODES = [
   'point',
   'linestring',
@@ -43,6 +65,7 @@ const MODES = [
   'rectangle',
   'angled-rectangle',
   'circle',
+  'arc-rectangle',
   'freehand',
   'freehand-linestring',
   'select',
@@ -51,7 +74,7 @@ const MODES = [
   'undo',
   'redo',
   'download',
-] as const
+] as unknown as TerradrawMode[]
 
 const MODE_LABELS: Record<string, string> = {
   render: 'なし',
@@ -60,7 +83,8 @@ const MODE_LABELS: Record<string, string> = {
   polygon: 'ポリゴン（Polygon）',
   rectangle: '矩形（Rectangle）',
   'angled-rectangle': '傾き矩形',
-  circle: '円（Circle）',
+  circle: '円 / 回転楕円',
+  'arc-rectangle': '円弧矩形',
   freehand: 'フリーハンド（面）',
   'freehand-linestring': 'フリーハンド（線）',
   select: '選択・編集',
@@ -88,6 +112,22 @@ onMounted(() => {
     open: true,
     modeOptions: {
       rectangle: new ScreenAlignedRectangleMode(),
+      circle: new RotatableCircleMode(),
+      'arc-rectangle': new ArcRectangleMode() as unknown as TerradrawModeClass,
+      select: new TerraDrawSelectMode({
+        flags: {
+          circle: {
+            feature: {
+              draggable: true,
+              rotateable: true,
+              coordinates: { resizable: 'center', deletable: false, midpoints: false },
+            },
+          },
+          'arc-rectangle': {
+            feature: { draggable: true, rotateable: true, scaleable: true },
+          },
+        },
+      }),
     },
   })
 
@@ -161,5 +201,14 @@ onUnmounted(() => {
 .current-mode span {
   font-weight: bold;
   color: #333;
+}
+
+.mode-hint {
+  margin-top: 8px;
+  font-size: 11px;
+  color: #666;
+  line-height: 1.6;
+  border-top: 1px solid #eee;
+  padding-top: 6px;
 }
 </style>
