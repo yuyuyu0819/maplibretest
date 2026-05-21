@@ -126,6 +126,9 @@ onMounted(() => {
           'arc-rectangle': {
             feature: { draggable: true, rotateable: true, scaleable: true },
           },
+          rectangle: {
+            feature: { draggable: true, rotateable: true, scaleable: true },
+          },
         },
       }),
     },
