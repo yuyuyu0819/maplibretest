@@ -45,8 +45,8 @@ import 'maplibre-gl/dist/maplibre-gl.css'
 import { MaplibreTerradrawControl } from '@watergis/maplibre-gl-terradraw'
 import type { TerradrawMode, TerradrawModeClass } from '@watergis/maplibre-gl-terradraw'
 import '@watergis/maplibre-gl-terradraw/dist/maplibre-gl-terradraw.css'
-import { TerraDrawSelectMode } from 'terra-draw'
 import { ScreenAlignedRectangleMode } from '../modes/ScreenAlignedRectangleMode'
+import { ScreenAlignedSelectMode } from '../modes/ScreenAlignedSelectMode'
 import { RotatableCircleMode } from '../modes/RotatableCircleMode'
 import { ArcRectangleMode } from '../modes/ArcRectangleMode'
 
@@ -114,7 +114,7 @@ onMounted(() => {
       rectangle: new ScreenAlignedRectangleMode(),
       circle: new RotatableCircleMode(),
       'arc-rectangle': new ArcRectangleMode() as unknown as TerradrawModeClass,
-      select: new TerraDrawSelectMode({
+      select: new ScreenAlignedSelectMode({
         flags: {
           circle: {
             feature: {
@@ -127,7 +127,11 @@ onMounted(() => {
             feature: { draggable: true, rotateable: true, scaleable: true },
           },
           rectangle: {
-            feature: { draggable: true, rotateable: true, scaleable: true },
+            feature: {
+              draggable: true,
+              rotateable: true,
+              coordinates: { draggable: true, deletable: false, midpoints: false },
+            },
           },
         },
       }),
