@@ -193,10 +193,12 @@ export class TerraDrawManager {
     for (let i = 0; i < limit; i++) {
       const [lng1, lat1] = ring[i]
       const [lng2, lat2] = ring[(i + 1) % n]
+      const dist = this._haversineM(lng1, lat1, lng2, lat2)
+      if (dist < 0.01) continue // 長さゼロの辺（描画開始直後の重複点）はスキップ
       features.push({
         type: 'Feature',
         geometry: { type: 'Point', coordinates: [(lng1 + lng2) / 2, (lat1 + lat2) / 2] },
-        properties: { label: this._formatDist(this._haversineM(lng1, lat1, lng2, lat2)) },
+        properties: { label: this._formatDist(dist) },
       })
     }
     return features
