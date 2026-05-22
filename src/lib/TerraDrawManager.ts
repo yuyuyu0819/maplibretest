@@ -46,6 +46,7 @@ export class TerraDrawManager {
   private control: MaplibreMeasureControl | null = null
   private map: maplibregl.Map | null = null
   private readonly onModeChanged: (mode: string) => void
+  private _rafId: number | null = null
 
   constructor(onModeChanged: (mode: string) => void) {
     this.onModeChanged = onModeChanged
@@ -68,8 +69,21 @@ export class TerraDrawManager {
   }
 
   destroy(): void {
+    if (this._rafId !== null) {
+      cancelAnimationFrame(this._rafId)
+      this._rafId = null
+    }
     this.control = null
     this.map = null
+  }
+
+  // フレームごとに1回だけ更新をまとめる
+  private _scheduleEdgeUpdate(): void {
+    if (this._rafId !== null) return
+    this._rafId = requestAnimationFrame(() => {
+      this._rafId = null
+      this._updatePolygonEdges()
+    })
   }
 
   private _buildControl(): MaplibreMeasureControl {
@@ -156,10 +170,19 @@ export class TerraDrawManager {
     map.moveLayer(POLYGON_EDGE_LAYER)
     const td = this.control?.getTerraDrawInstance()
     if (td) {
-      td.on('change', (_ids: string[], type: string) => {
-        if (type !== 'styling') this._updatePolygonEdges()
+      td.on('change', (ids: string[], type: string) => {
+        if (type === 'styling') return
+        // 変更対象に polygon フィーチャーが含まれる場合のみ更新をスケジュール
+        const hasPolygon = type === 'delete' || ids.some((id) => {
+          const f = (td as any).getSnapshotFeature?.(id)
+          return f?.properties?.mode === 'polygon'
+        })
+        if (hasPolygon) this._scheduleEdgeUpdate()
       })
-      td.on('finish', () => this._updatePolygonEdges())
+      td.on('finish', (id: string) => {
+        const f = (td as any).getSnapshotFeature?.(id)
+        if (!f || f.properties?.mode === 'polygon') this._scheduleEdgeUpdate()
+      })
     }
   }
 
@@ -181,8 +204,6 @@ export class TerraDrawManager {
       }
     }
     source.setData({ type: 'FeatureCollection', features })
-    // 他レイヤーの再配置に追従して常に最上位を維持
-    if (map.getLayer(POLYGON_EDGE_LAYER)) map.moveLayer(POLYGON_EDGE_LAYER)
   }
 
   private _buildEdgeFeatures(ring: [number, number][], skipLast = false): GeoJSON.Feature[] {
