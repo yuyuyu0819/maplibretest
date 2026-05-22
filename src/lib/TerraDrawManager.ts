@@ -1,9 +1,9 @@
 import maplibregl from 'maplibre-gl'
 import { MaplibreMeasureControl } from '@watergis/maplibre-gl-terradraw'
 import type { TerradrawMode, TerradrawModeClass } from '@watergis/maplibre-gl-terradraw'
+import { TerraDrawCircleMode } from 'terra-draw'
 import { ScreenAlignedRectangleMode } from '../modes/ScreenAlignedRectangleMode'
 import { ScreenAlignedSelectMode } from '../modes/ScreenAlignedSelectMode'
-import { RotatableCircleMode } from '../modes/RotatableCircleMode'
 import { ArcRectangleMode } from '../modes/ArcRectangleMode'
 
 const POLYGON_EDGE_SOURCE = 'polygon-edge-source'
@@ -78,7 +78,7 @@ export class TerraDrawManager {
       open: true,
       modeOptions: {
         rectangle: new ScreenAlignedRectangleMode(),
-        circle: new RotatableCircleMode(),
+        circle: new TerraDrawCircleMode(),
         'arc-rectangle': new ArcRectangleMode() as unknown as TerradrawModeClass,
         select: new ScreenAlignedSelectMode({
           flags: {
@@ -174,7 +174,10 @@ export class TerraDrawManager {
     const features: GeoJSON.Feature[] = []
     for (const f of td.getSnapshot() as any[]) {
       if (f.properties.mode === 'polygon' && f.geometry.type === 'Polygon') {
-        features.push(...this._buildEdgeFeatures(f.geometry.coordinates[0]))
+        features.push(...this._buildEdgeFeatures(
+          f.geometry.coordinates[0],
+          !!f.properties.currentlyDrawing,
+        ))
       }
     }
     source.setData({ type: 'FeatureCollection', features })
@@ -182,10 +185,12 @@ export class TerraDrawManager {
     if (map.getLayer(POLYGON_EDGE_LAYER)) map.moveLayer(POLYGON_EDGE_LAYER)
   }
 
-  private _buildEdgeFeatures(ring: [number, number][]): GeoJSON.Feature[] {
+  private _buildEdgeFeatures(ring: [number, number][], skipLast = false): GeoJSON.Feature[] {
     const n = ring.length - 1
+    // 描画中は最後の辺（カーソル位置→始点の閉じ辺）を除外して重複ラベルを防ぐ
+    const limit = skipLast ? n - 1 : n
     const features: GeoJSON.Feature[] = []
-    for (let i = 0; i < n; i++) {
+    for (let i = 0; i < limit; i++) {
       const [lng1, lat1] = ring[i]
       const [lng2, lat2] = ring[(i + 1) % n]
       features.push({

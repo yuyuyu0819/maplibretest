@@ -31,8 +31,7 @@
       </div>
       <div v-if="selectedMode === 'circle'" class="mode-hint">
         ①中心クリック<br>
-        ②長軸クリック<br>
-        ③短軸クリックで確定
+        ②半径を決めてクリックで確定
       </div>
     </div>
   </div>
