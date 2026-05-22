@@ -155,14 +155,15 @@ export class TerraDrawManager {
       open: true,
       modeOptions: {
         rectangle: new ScreenAlignedRectangleMode(),
-        circle: new TerraDrawCircleMode(),
+        circle: new TerraDrawCircleMode({ segments: 32 }),
         'arc-rectangle': new ArcRectangleMode() as unknown as TerradrawModeClass,
         select: new ScreenAlignedSelectMode({
           flags: {
             circle: {
               feature: {
                 draggable: true,
-                scaleable: true,
+                rotateable: true,
+                coordinates: { resizable: 'center', deletable: false, midpoints: false },
               },
             },
             'arc-rectangle': {
