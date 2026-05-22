@@ -1,6 +1,6 @@
 import maplibregl from 'maplibre-gl'
 import { MaplibreMeasureControl } from '@watergis/maplibre-gl-terradraw'
-import type { TerradrawMode, TerradrawModeClass } from '@watergis/maplibre-gl-terradraw'
+import type { MeasureControlOptions, TerradrawMode, TerradrawModeClass } from '@watergis/maplibre-gl-terradraw'
 import { TerraDrawCircleMode } from 'terra-draw'
 import { ScreenAlignedRectangleMode } from '../modes/ScreenAlignedRectangleMode'
 import { ScreenAlignedSelectMode } from '../modes/ScreenAlignedSelectMode'
@@ -16,7 +16,7 @@ export const MODE_LABELS: Record<string, string> = {
   polygon: 'ポリゴン（Polygon）',
   rectangle: '矩形（Rectangle）',
   'angled-rectangle': '傾き矩形',
-  circle: '円 / 回転楕円',
+  circle: '円',
   'arc-rectangle': '円弧矩形',
   freehand: 'フリーハンド（面）',
   'freehand-linestring': 'フリーハンド（線）',
@@ -42,11 +42,40 @@ const MODES = [
   'download',
 ] as unknown as TerradrawMode[]
 
+/**
+ * MaplibreMeasureControl のサブクラス。
+ * handleTerradrawFeatureChanged を RAF でバッチ化し、
+ * マウス移動のたびに measurePolygon が走るのを抑制する。
+ */
+class ThrottledMeasureControl extends MaplibreMeasureControl {
+  constructor(options?: MeasureControlOptions) {
+    super(options)
+    const orig = (this as any).handleTerradrawFeatureChanged.bind(this)
+    let rafId: number | null = null
+    let pendingIds: string[] = []
+    let pendingType = 'update'
+    ;(this as any).handleTerradrawFeatureChanged = (ids: string[], type: string) => {
+      // delete は即時処理してラベルを確実に消す
+      if (type === 'delete') { orig(ids, type); return }
+      pendingIds.push(...ids)
+      pendingType = type
+      if (rafId !== null) return
+      rafId = requestAnimationFrame(() => {
+        rafId = null
+        const uniqueIds = [...new Set(pendingIds)]
+        pendingIds = []
+        orig(uniqueIds, pendingType)
+      })
+    }
+  }
+}
+
 export class TerraDrawManager {
-  private control: MaplibreMeasureControl | null = null
+  private control: ThrottledMeasureControl | null = null
   private map: maplibregl.Map | null = null
   private readonly onModeChanged: (mode: string) => void
   private _rafId: number | null = null
+  private _pendingEdgeDataUpdate = false
 
   constructor(onModeChanged: (mode: string) => void) {
     this.onModeChanged = onModeChanged
@@ -77,17 +106,28 @@ export class TerraDrawManager {
     this.map = null
   }
 
-  // フレームごとに1回だけ更新をまとめる
-  private _scheduleEdgeUpdate(): void {
+  /**
+   * フレームごとに1回だけ処理をまとめる。
+   * updateEdgeData=true のとき setData も実行、false のときは moveLayer だけ。
+   */
+  private _scheduleFrame(updateEdgeData: boolean): void {
+    if (updateEdgeData) this._pendingEdgeDataUpdate = true
     if (this._rafId !== null) return
     this._rafId = requestAnimationFrame(() => {
       this._rafId = null
-      this._updatePolygonEdges()
+      if (this._pendingEdgeDataUpdate) {
+        this._pendingEdgeDataUpdate = false
+        this._updatePolygonEdges() // setData + moveLayer
+      } else {
+        // 矩形・円など非ポリゴン変化時もレイヤー順を維持
+        const map = this.map
+        if (map?.getLayer(POLYGON_EDGE_LAYER)) map.moveLayer(POLYGON_EDGE_LAYER)
+      }
     })
   }
 
-  private _buildControl(): MaplibreMeasureControl {
-    return new MaplibreMeasureControl({
+  private _buildControl(): ThrottledMeasureControl {
+    return new ThrottledMeasureControl({
       modes: [...MODES],
       open: true,
       modeOptions: {
@@ -166,24 +206,22 @@ export class TerraDrawManager {
         'text-color': '#232E3D',
       },
     })
-    // 追加直後に最上位へ移動
     map.moveLayer(POLYGON_EDGE_LAYER)
+
     const td = this.control?.getTerraDrawInstance()
-    if (td) {
-      td.on('change', (ids: string[], type: string) => {
-        if (type === 'styling') return
-        // 変更対象に polygon フィーチャーが含まれる場合のみ更新をスケジュール
-        const hasPolygon = type === 'delete' || ids.some((id) => {
-          const f = (td as any).getSnapshotFeature?.(id)
-          return f?.properties?.mode === 'polygon'
-        })
-        if (hasPolygon) this._scheduleEdgeUpdate()
-      })
-      td.on('finish', (id: string) => {
+    if (!td) return
+    td.on('change', (ids: string[], type: string) => {
+      if (type === 'styling') return
+      const hasPolygon = type === 'delete' || ids.some((id) => {
         const f = (td as any).getSnapshotFeature?.(id)
-        if (!f || f.properties?.mode === 'polygon') this._scheduleEdgeUpdate()
+        return f?.properties?.mode === 'polygon'
       })
-    }
+      this._scheduleFrame(hasPolygon)
+    })
+    td.on('finish', (id: string) => {
+      const f = (td as any).getSnapshotFeature?.(id)
+      this._scheduleFrame(!f || f.properties?.mode === 'polygon')
+    })
   }
 
   private _updatePolygonEdges(): void {
@@ -204,18 +242,18 @@ export class TerraDrawManager {
       }
     }
     source.setData({ type: 'FeatureCollection', features })
+    if (map.getLayer(POLYGON_EDGE_LAYER)) map.moveLayer(POLYGON_EDGE_LAYER)
   }
 
   private _buildEdgeFeatures(ring: [number, number][], skipLast = false): GeoJSON.Feature[] {
     const n = ring.length - 1
-    // 描画中は最後の辺（カーソル位置→始点の閉じ辺）を除外して重複ラベルを防ぐ
     const limit = skipLast ? n - 1 : n
     const features: GeoJSON.Feature[] = []
     for (let i = 0; i < limit; i++) {
       const [lng1, lat1] = ring[i]
       const [lng2, lat2] = ring[(i + 1) % n]
       const dist = this._haversineM(lng1, lat1, lng2, lat2)
-      if (dist < 0.01) continue // 長さゼロの辺（描画開始直後の重複点）はスキップ
+      if (dist < 0.01) continue
       features.push({
         type: 'Feature',
         geometry: { type: 'Point', coordinates: [(lng1 + lng2) / 2, (lat1 + lat2) / 2] },
