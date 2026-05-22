@@ -233,12 +233,12 @@ export class TerraDrawManager {
     const td = this.control?.getTerraDrawInstance()
     if (!td) return
     // 同期ハンドラでは ID を蓄積するだけ。重い処理は RAF 内で行う
-    td.on('change', (ids: string[], type: string) => {
+    td.on('change', (ids: (string | number)[], type: string) => {
       if (type === 'styling') return
-      this._scheduleUpdate(ids, type === 'delete')
+      this._scheduleUpdate(ids.map(String), type === 'delete')
     })
-    td.on('finish', (id: string) => {
-      this._scheduleUpdate([id], false)
+    td.on('finish', (id: string | number) => {
+      this._scheduleUpdate([String(id)], false)
     })
   }
 
