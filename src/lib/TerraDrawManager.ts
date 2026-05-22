@@ -162,8 +162,7 @@ export class TerraDrawManager {
             circle: {
               feature: {
                 draggable: true,
-                rotateable: true,
-                coordinates: { resizable: 'center', deletable: false, midpoints: false },
+                scaleable: true,
               },
             },
             'arc-rectangle': {
