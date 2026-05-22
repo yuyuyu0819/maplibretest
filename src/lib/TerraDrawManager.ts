@@ -152,6 +152,8 @@ export class TerraDrawManager {
         'text-color': '#232E3D',
       },
     })
+    // 追加直後に最上位へ移動
+    map.moveLayer(POLYGON_EDGE_LAYER)
     const td = this.control?.getTerraDrawInstance()
     if (td) {
       td.on('change', (_ids: string[], type: string) => {
@@ -176,6 +178,8 @@ export class TerraDrawManager {
       }
     }
     source.setData({ type: 'FeatureCollection', features })
+    // 他レイヤーの再配置に追従して常に最上位を維持
+    if (map.getLayer(POLYGON_EDGE_LAYER)) map.moveLayer(POLYGON_EDGE_LAYER)
   }
 
   private _buildEdgeFeatures(ring: [number, number][]): GeoJSON.Feature[] {
