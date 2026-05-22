@@ -23,7 +23,6 @@ export const MODE_LABELS: Record<string, string> = {
   select: '選択・編集',
 }
 
-// 'arc-rectangle' は AvailableModes に含まれないため as unknown でキャスト
 const MODES = [
   'point',
   'linestring',
@@ -45,7 +44,7 @@ const MODES = [
 /**
  * MaplibreMeasureControl のサブクラス。
  * handleTerradrawFeatureChanged を RAF でバッチ化し、
- * マウス移動のたびに measurePolygon が走るのを抑制する。
+ * マウス移動ごとに measurePolygon が走るのを抑制する。
  */
 class ThrottledMeasureControl extends MaplibreMeasureControl {
   constructor(options?: MeasureControlOptions) {
@@ -55,7 +54,6 @@ class ThrottledMeasureControl extends MaplibreMeasureControl {
     let pendingIds: string[] = []
     let pendingType = 'update'
     ;(this as any).handleTerradrawFeatureChanged = (ids: string[], type: string) => {
-      // delete は即時処理してラベルを確実に消す
       if (type === 'delete') { orig(ids, type); return }
       pendingIds.push(...ids)
       pendingType = type
@@ -74,8 +72,13 @@ export class TerraDrawManager {
   private control: ThrottledMeasureControl | null = null
   private map: maplibregl.Map | null = null
   private readonly onModeChanged: (mode: string) => void
+
+  // RAF バッチ用ステート
   private _rafId: number | null = null
-  private _pendingEdgeDataUpdate = false
+  private _pendingIds: string[] = []
+  private _pendingHasDelete = false
+  // ポリゴン図形が1つ以上存在するかのキャッシュ
+  private _hasPolygonFeatures = false
 
   constructor(onModeChanged: (mode: string) => void) {
     this.onModeChanged = onModeChanged
@@ -107,19 +110,39 @@ export class TerraDrawManager {
   }
 
   /**
-   * フレームごとに1回だけ処理をまとめる。
-   * updateEdgeData=true のとき setData も実行、false のときは moveLayer だけ。
+   * IDs を蓄積してフレームごとに1回だけ処理する。
+   * getSnapshotFeature の呼び出しはここではなく RAF 内で行う。
    */
-  private _scheduleFrame(updateEdgeData: boolean): void {
-    if (updateEdgeData) this._pendingEdgeDataUpdate = true
+  private _scheduleUpdate(ids: string[], isDelete: boolean): void {
+    if (isDelete) {
+      this._pendingHasDelete = true
+    } else {
+      this._pendingIds.push(...ids)
+    }
     if (this._rafId !== null) return
     this._rafId = requestAnimationFrame(() => {
       this._rafId = null
-      if (this._pendingEdgeDataUpdate) {
-        this._pendingEdgeDataUpdate = false
-        this._updatePolygonEdges() // setData + moveLayer
-      } else {
-        // 矩形・円など非ポリゴン変化時もレイヤー順を維持
+      const ids = [...new Set(this._pendingIds)]
+      this._pendingIds = []
+      const hasDelete = this._pendingHasDelete
+      this._pendingHasDelete = false
+
+      if (hasDelete) {
+        this._updatePolygonEdges()
+        return
+      }
+
+      // RAF 内で polygon フィーチャーか判定（同期ホットパスから除外）
+      const td = this.control?.getTerraDrawInstance()
+      const hasPolygon = !!td && ids.some((id) => {
+        const f = (td as any).getSnapshotFeature?.(id)
+        return f?.properties?.mode === 'polygon'
+      })
+
+      if (hasPolygon) {
+        this._updatePolygonEdges()
+      } else if (this._hasPolygonFeatures) {
+        // ポリゴン図形が存在する場合のみレイヤー順を維持
         const map = this.map
         if (map?.getLayer(POLYGON_EDGE_LAYER)) map.moveLayer(POLYGON_EDGE_LAYER)
       }
@@ -156,7 +179,6 @@ export class TerraDrawManager {
           },
         }),
       },
-      // polygon モードの面積ラベルを非表示（辺の長さラベルで代替）
       polygonLayerSpec: {
         id: '{prefix}-polygon-label',
         type: 'symbol',
@@ -210,17 +232,13 @@ export class TerraDrawManager {
 
     const td = this.control?.getTerraDrawInstance()
     if (!td) return
+    // 同期ハンドラでは ID を蓄積するだけ。重い処理は RAF 内で行う
     td.on('change', (ids: string[], type: string) => {
       if (type === 'styling') return
-      const hasPolygon = type === 'delete' || ids.some((id) => {
-        const f = (td as any).getSnapshotFeature?.(id)
-        return f?.properties?.mode === 'polygon'
-      })
-      this._scheduleFrame(hasPolygon)
+      this._scheduleUpdate(ids, type === 'delete')
     })
     td.on('finish', (id: string) => {
-      const f = (td as any).getSnapshotFeature?.(id)
-      this._scheduleFrame(!f || f.properties?.mode === 'polygon')
+      this._scheduleUpdate([id], false)
     })
   }
 
@@ -241,6 +259,7 @@ export class TerraDrawManager {
         ))
       }
     }
+    this._hasPolygonFeatures = features.length > 0
     source.setData({ type: 'FeatureCollection', features })
     if (map.getLayer(POLYGON_EDGE_LAYER)) map.moveLayer(POLYGON_EDGE_LAYER)
   }
