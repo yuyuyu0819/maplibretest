@@ -50,7 +50,7 @@ const selectedMode = ref<string>('render')
 const currentModeLabel = ref<string>('なし')
 
 let map: maplibregl.Map | null = null
-let drawManager: TerraDrawManager | null = null
+const drawManager = ref<TerraDrawManager | null>(null)
 
 onMounted(() => {
   if (!mapContainer.value) return
@@ -62,15 +62,15 @@ onMounted(() => {
     zoom: 9,
   })
 
-  drawManager = new TerraDrawManager((mode) => {
+  drawManager.value = new TerraDrawManager((mode) => {
     selectedMode.value = mode
     currentModeLabel.value = MODE_LABELS[mode] ?? 'なし'
   })
-  drawManager.init(map)
+  drawManager.value.init(map)
 })
 
 onUnmounted(() => {
-  drawManager?.destroy()
+  drawManager.value?.destroy()
   map?.remove()
 })
 </script>
