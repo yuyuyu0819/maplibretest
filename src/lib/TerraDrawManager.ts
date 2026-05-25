@@ -1,44 +1,29 @@
 import maplibregl from 'maplibre-gl'
 import { MaplibreMeasureControl } from '@watergis/maplibre-gl-terradraw'
-import type { MeasureControlOptions, TerradrawMode, TerradrawModeClass } from '@watergis/maplibre-gl-terradraw'
+import type { MeasureControlOptions, TerradrawMode } from '@watergis/maplibre-gl-terradraw'
 import { TerraDrawCircleMode } from 'terra-draw'
 import { ScreenAlignedRectangleMode } from '../modes/ScreenAlignedRectangleMode'
 import { ScreenAlignedSelectMode } from '../modes/ScreenAlignedSelectMode'
-import { ArcRectangleMode } from '../modes/ArcRectangleMode'
 
 const POLYGON_EDGE_SOURCE = 'polygon-edge-source'
 const POLYGON_EDGE_LAYER = 'polygon-edge-labels'
 
+export const DRAWING_MODES = new Set(['polygon', 'rectangle', 'circle'])
+
 export const MODE_LABELS: Record<string, string> = {
   render: 'なし',
-  point: '点（Point）',
-  linestring: '線（LineString）',
   polygon: 'ポリゴン（Polygon）',
   rectangle: '矩形（Rectangle）',
-  'angled-rectangle': '傾き矩形',
   circle: '円',
-  'arc-rectangle': '円弧矩形',
-  freehand: 'フリーハンド（面）',
-  'freehand-linestring': 'フリーハンド（線）',
   select: '選択・編集',
 }
 
 const MODES = [
-  'point',
-  'linestring',
   'polygon',
   'rectangle',
-  'angled-rectangle',
   'circle',
-  'arc-rectangle',
-  'freehand',
-  'freehand-linestring',
   'select',
-  'delete-selection',
   'delete',
-  'undo',
-  'redo',
-  'download',
 ] as unknown as TerradrawMode[]
 
 /**
@@ -47,6 +32,8 @@ const MODES = [
  * マウス移動ごとに measurePolygon が走るのを抑制する。
  */
 class ThrottledMeasureControl extends MaplibreMeasureControl {
+  private _el: HTMLElement | null = null
+
   constructor(options?: MeasureControlOptions) {
     super(options)
     const orig = (this as any).handleTerradrawFeatureChanged.bind(this)
@@ -66,12 +53,32 @@ class ThrottledMeasureControl extends MaplibreMeasureControl {
       })
     }
   }
+
+  onAdd(map: maplibregl.Map): HTMLElement {
+    const el = super.onAdd(map)
+    this._el = el
+    return el
+  }
+
+  setVisible(visible: boolean): void {
+    if (this._el) this._el.style.display = visible ? '' : 'none'
+  }
+
+  setDrawingModesDisabled(disabled: boolean): void {
+    if (!this._el) return
+    if (disabled) {
+      this._el.classList.add('td-draw-locked')
+    } else {
+      this._el.classList.remove('td-draw-locked')
+    }
+  }
 }
 
 export class TerraDrawManager {
   private control: ThrottledMeasureControl | null = null
   private map: maplibregl.Map | null = null
   private readonly onModeChanged: (mode: string) => void
+  private readonly onStateChanged: (hasFeature: boolean) => void
 
   // RAF バッチ用ステート
   private _rafId: number | null = null
@@ -79,9 +86,17 @@ export class TerraDrawManager {
   private _pendingHasDelete = false
   // ポリゴン図形が1つ以上存在するかのキャッシュ
   private _hasPolygonFeatures = false
+  // 完成済みフィーチャーが1つ以上存在するか
+  private _hasFeature = false
+  // mode-changed で select に戻す際の再帰防止フラグ
+  private _isReverting = false
 
-  constructor(onModeChanged: (mode: string) => void) {
+  constructor(
+    onModeChanged: (mode: string) => void = () => {},
+    onStateChanged: (hasFeature: boolean) => void = () => {},
+  ) {
     this.onModeChanged = onModeChanged
+    this.onStateChanged = onStateChanged
   }
 
   init(map: maplibregl.Map): void {
@@ -90,14 +105,43 @@ export class TerraDrawManager {
     map.addControl(this.control, 'top-left')
     map.on('load', () => this._setupEdgeLayer())
     this.control.on('mode-changed', (e: { mode: string }) => {
-      this.onModeChanged(e.mode in MODE_LABELS ? e.mode : 'render')
+      const mode = e.mode
+      // 再帰で発火した select への切り替えをそのまま通す
+      if (this._isReverting) {
+        this._isReverting = false
+        this.onModeChanged(mode in MODE_LABELS ? mode : 'render')
+        return
+      }
+      // フィーチャー存在中・描画中は描画モードへの切り替えを阻止して select に戻す
+      if (this._shouldBlockDrawingMode() && DRAWING_MODES.has(mode)) {
+        this._isReverting = true
+        this.control?.getTerraDrawInstance()?.setMode('select')
+        return
+      }
+      this.onModeChanged(mode in MODE_LABELS ? mode : 'render')
     })
   }
 
+  /** 描画モードを設定する。フィーチャー存在中は描画モードへの切り替えを無視する */
   setMode(mode: string): void {
+    if (this._shouldBlockDrawingMode() && DRAWING_MODES.has(mode)) return
     const td = this.control?.getTerraDrawInstance()
     if (!td) return
     td.setMode(mode === 'render' ? 'render' : mode)
+  }
+
+  /** 描画ツールパネルの表示/非表示を切り替える */
+  setVisible(visible: boolean): void {
+    this.control?.setVisible(visible)
+  }
+
+  /** 描画済み（確定した）フィーチャーの一覧を返す */
+  getFeatures(): GeoJSON.Feature[] {
+    const td = this.control?.getTerraDrawInstance()
+    if (!td) return []
+    return (td.getSnapshot() as GeoJSON.Feature[]).filter(
+      (f) => !(f.properties as any)?.currentlyDrawing,
+    )
   }
 
   destroy(): void {
@@ -107,6 +151,30 @@ export class TerraDrawManager {
     }
     this.control = null
     this.map = null
+  }
+
+  /** 完成済みフィーチャーが存在するか、または描画中かを返す */
+  private _shouldBlockDrawingMode(): boolean {
+    if (this._hasFeature) return true
+    const td = this.control?.getTerraDrawInstance()
+    if (!td) return false
+    return (td.getSnapshot() as any[]).some((f) => f.properties?.currentlyDrawing)
+  }
+
+  private _setHasFeature(value: boolean): void {
+    if (value === this._hasFeature) return
+    this._hasFeature = value
+    this.onStateChanged(value)
+    this.control?.setDrawingModesDisabled(value)
+  }
+
+  private _updateHasFeature(): void {
+    const td = this.control?.getTerraDrawInstance()
+    if (!td) return
+    const hasFeature = (td.getSnapshot() as any[]).some(
+      (f) => !f.properties?.currentlyDrawing,
+    )
+    this._setHasFeature(hasFeature)
   }
 
   /**
@@ -129,6 +197,7 @@ export class TerraDrawManager {
 
       if (hasDelete) {
         this._updatePolygonEdges()
+        this._updateHasFeature()
         return
       }
 
@@ -142,7 +211,6 @@ export class TerraDrawManager {
       if (hasPolygon) {
         this._updatePolygonEdges()
       } else if (this._hasPolygonFeatures) {
-        // ポリゴン図形が存在する場合のみレイヤー順を維持
         const map = this.map
         if (map?.getLayer(POLYGON_EDGE_LAYER)) map.moveLayer(POLYGON_EDGE_LAYER)
       }
@@ -156,7 +224,6 @@ export class TerraDrawManager {
       modeOptions: {
         rectangle: new ScreenAlignedRectangleMode(),
         circle: new TerraDrawCircleMode({ segments: 32 }),
-        'arc-rectangle': new ArcRectangleMode() as unknown as TerradrawModeClass,
         select: new ScreenAlignedSelectMode({
           flags: {
             circle: {
@@ -165,9 +232,6 @@ export class TerraDrawManager {
                 rotateable: true,
                 coordinates: { resizable: 'center', deletable: false, midpoints: false },
               },
-            },
-            'arc-rectangle': {
-              feature: { draggable: true, rotateable: true, scaleable: true },
             },
             rectangle: {
               feature: {
@@ -239,6 +303,14 @@ export class TerraDrawManager {
     })
     td.on('finish', (id: string | number) => {
       this._scheduleUpdate([String(id)], false)
+      // finish と同時に即座にブロック → RAF で mode 切り替えと選択
+      this._setHasFeature(true)
+      requestAnimationFrame(() => {
+        const tdInstance = this.control?.getTerraDrawInstance()
+        if (!tdInstance) return
+        tdInstance.setMode('select')
+        tdInstance.selectFeature(id)
+      })
     })
   }
 

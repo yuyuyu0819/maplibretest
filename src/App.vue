@@ -13,4 +13,15 @@ html, body, #app {
   height: 100%;
   font-family: 'Segoe UI', sans-serif;
 }
+
+.maplibregl-ctrl button:disabled {
+  cursor: not-allowed;
+}
+
+.td-draw-locked .maplibregl-terradraw-measure-add-polygon-button,
+.td-draw-locked .maplibregl-terradraw-measure-add-rectangle-button,
+.td-draw-locked .maplibregl-terradraw-measure-add-circle-button {
+  opacity: 0.35 !important;
+  cursor: not-allowed !important;
+}
 </style>
