@@ -1,9 +1,12 @@
 import maplibregl from 'maplibre-gl'
-import { MaplibreMeasureControl } from '@watergis/maplibre-gl-terradraw'
+import { MaplibreMeasureControl, calcArea } from '@watergis/maplibre-gl-terradraw'
 import type { MeasureControlOptions, TerradrawMode } from '@watergis/maplibre-gl-terradraw'
 import { TerraDrawCircleMode } from 'terra-draw'
 import { ScreenAlignedRectangleMode } from '../modes/ScreenAlignedRectangleMode'
 import { ScreenAlignedSelectMode } from '../modes/ScreenAlignedSelectMode'
+
+const AREA_UNIT = (m2: number) =>
+  m2 >= 1e6 ? { area: m2 / 1e6, unit: 'km²' } : { area: m2, unit: 'm²' }
 
 const POLYGON_EDGE_SOURCE = 'polygon-edge-source'
 const POLYGON_EDGE_LAYER = 'polygon-edge-labels'
@@ -54,7 +57,7 @@ class ThrottledMeasureControl extends MaplibreMeasureControl {
     }
   }
 
-  onAdd(map: maplibregl.Map): HTMLElement {
+  override onAdd(map: maplibregl.Map): HTMLElement {
     const el = super.onAdd(map)
     this._el = el
     return el
@@ -79,6 +82,7 @@ export class TerraDrawManager {
   private map: maplibregl.Map | null = null
   private readonly onModeChanged: (mode: string) => void
   private readonly onStateChanged: (hasFeature: boolean) => void
+  private readonly onFinish: (feature: GeoJSON.Feature) => void
 
   // RAF バッチ用ステート
   private _rafId: number | null = null
@@ -94,9 +98,11 @@ export class TerraDrawManager {
   constructor(
     onModeChanged: (mode: string) => void = () => {},
     onStateChanged: (hasFeature: boolean) => void = () => {},
+    onFinish: (feature: GeoJSON.Feature) => void = () => {},
   ) {
     this.onModeChanged = onModeChanged
     this.onStateChanged = onStateChanged
+    this.onFinish = onFinish
   }
 
   init(map: maplibregl.Map): void {
@@ -133,6 +139,19 @@ export class TerraDrawManager {
   /** 描画ツールパネルの表示/非表示を切り替える */
   setVisible(visible: boolean): void {
     this.control?.setVisible(visible)
+  }
+
+  /** 現在のフィーチャー（描画中・完成問わず）の面積を返す。Polygon でなければ null */
+  getFeatureArea(): { area: number; unit: string } | null {
+    const td = this.control?.getTerraDrawInstance()
+    if (!td) return null
+    const feature = (td.getSnapshot() as GeoJSON.Feature[]).find(
+      (f) => f.geometry.type === 'Polygon',
+    )
+    if (!feature) return null
+    const result = calcArea(feature as any, 'metric', 2, AREA_UNIT)
+    const props = result.properties as any
+    return { area: props.area, unit: props.unit }
   }
 
   /** 描画済み（確定した）フィーチャーの一覧を返す */
@@ -262,6 +281,7 @@ export class TerraDrawManager {
         },
       },
       measureUnitType: 'metric',
+      areaUnit: AREA_UNIT,
     })
   }
 
@@ -305,6 +325,8 @@ export class TerraDrawManager {
       this._scheduleUpdate([String(id)], false)
       // finish と同時に即座にブロック → RAF で mode 切り替えと選択
       this._setHasFeature(true)
+      const feature = (td as any).getSnapshotFeature?.(id) as GeoJSON.Feature | undefined
+      if (feature) this.onFinish(feature)
       requestAnimationFrame(() => {
         const tdInstance = this.control?.getTerraDrawInstance()
         if (!tdInstance) return

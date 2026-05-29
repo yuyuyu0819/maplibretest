@@ -36,7 +36,14 @@ onMounted(() => {
     zoom: 9,
   })
 
-  drawManager.value = new TerraDrawManager()
+    drawManager.value = new TerraDrawManager(
+    () => {},
+    () => {},
+    (feature) => {
+       console.log(feature)
+    }
+  )
+
   drawManager.value.init(map)
 })
 
